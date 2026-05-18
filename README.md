@@ -24,3 +24,19 @@ of years, but is visible again under the App::rename listing.
   file names.
 - Parameter tab completion support for bash and zsh.
 
+# Companion Tools
+
+## rename-match
+
+For database-driven bulk renaming (e.g., mapping messy academic PDF filenames
+to sequential numbers based on a CSV/JSON database), see the companion script
+in `contrib/rename-match.py`.
+
+- 4-strategy filename parsing (journal/year/volume/pages/title extraction)
+- Indexed database lookup for fast matching
+- Scoring system: ≥0.85 direct match, 0.5–0.84 best-of-multiple, <0.5 fail-safe
+- Dry-run mode and rename command generation
+- Handles duplicate sequence numbers with `_dup` suffixes
+
+See `contrib/README.md` for detailed documentation.
+
