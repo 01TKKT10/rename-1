@@ -88,14 +88,32 @@ def split_query_words(query):
     words = cleaned.split()
     result = []
     for w in words:
-        w = w.strip()
-        # 跳过纯数字和过短的词
-        if len(w) <= 1:
+        w = w.strip().lower()
+        # 跳过纯数字、过短、停用词
+        if len(w) <= 2:
             continue
         if w.isdigit():
             continue
-        result.append(w.lower())
+        if w in STOPWORDS:
+            continue
+        result.append(w)
     return result
+
+
+
+STOPWORDS = {
+    'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+    'of', 'with', 'by', 'from', 'up', 'about', 'into', 'through', 'during',
+    'before', 'after', 'above', 'below', 'between', 'among', 'is', 'are',
+    'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does',
+    'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can',
+    'shall', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it',
+    'we', 'they', 'me', 'him', 'her', 'us', 'them', 'as', 'if', 'so', 'than',
+    'too', 'very', 'just', 'now', 'then', 'here', 'there', 'when', 'where',
+    'why', 'how', 'all', 'each', 'every', 'both', 'few', 'more', 'most',
+    'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same',
+    'than', 'too', 'very'
+}
 
 
 def whole_word_match(word, text):
@@ -167,21 +185,22 @@ class Matcher:
         """
         整词交集匹配主入口。
 
-        返回: (seq, confidence, record)
+        返回: (seq, confidence, record, multi_candidates)
             - seq: 匹配到的序号，None 表示无匹配
-            - confidence: 1.0=唯一匹配, 0.7=多匹配, 0.0=无匹配
-            - record: 匹配到的记录字典
+            - confidence: 1.0=唯一匹配, 0.5=多匹配, 0.0=无匹配
+            - record: 匹配到的记录字典（多匹配时为最佳猜测）
+            - multi_candidates: 多匹配时的全部候选 [(seq, title, matched), ...]
         """
         query = clean_query(filename)
         words = split_query_words(query)
 
         if not words:
-            return None, 0.0, None
+            return None, 0.0, None, []
 
-        # 初始候选集：全部记录
+        # 初始候选集：全部记录索引
         candidates = list(range(len(self.db.records)))
+        matched_words_count = 0
 
-        matched_words = 0
         for word in words:
             next_candidates = []
             for idx in candidates:
@@ -194,32 +213,49 @@ class Matcher:
                 break
 
             candidates = next_candidates
-            matched_words += 1
+            matched_words_count += 1
 
             # 提前终止：只剩 1 个候选 → 唯一解已确定
             if len(candidates) == 1:
                 break
 
-            # 提前终止：已经用了 5 个单词仍未收敛到 1 个 → 停止，标记为多匹配
-            if matched_words >= 5 and len(candidates) > 1:
+            # 提前终止：已经用了 5 个单词仍未收敛到 1 个 → 标记多匹配
+            if matched_words_count >= 5 and len(candidates) > 1:
                 break
 
         if not candidates:
-            return None, 0.0, None
+            return None, 0.0, None, []
 
         if len(candidates) == 1:
             rec = self.db.records[candidates[0]]
-            return rec.get('seq'), 1.0, rec
-        else:
-            # 多匹配：取前 3 个作为备选（按已匹配单词数量/标题长度排序）
-            # 简单策略：选标题最短的前几个（通常更精确）
-            candidates_sorted = sorted(
-                candidates,
-                key=lambda i: len(self.db.records[i].get('title', ''))
-            )
-            best = candidates_sorted[0]
-            rec = self.db.records[best]
-            return rec.get('seq'), 0.7, rec
+            return rec.get('seq'), 1.0, rec, []
+
+        # ═══════════════════════════════════════════════════
+        # 多匹配分支：排序策略
+        # ═══════════════════════════════════════════════════
+        # 所有候选都通过了 matched_words_count 个单词的整词匹配。
+        # 按"匹配密度"排序：matched_words / 标题总词数（越高越精确）
+        # tie-breaker：标题越短越接近截断版本
+        def density_score(idx):
+            title = self.db.records[idx].get('title', '') or ''
+            title_words = split_query_words(title)
+            total = len(title_words) if title_words else 1
+            return (matched_words_count / total, -total)  # 密度高优先，同密度标题短优先
+
+        candidates_sorted = sorted(candidates, key=density_score, reverse=True)
+        best = candidates_sorted[0]
+        rec = self.db.records[best]
+
+        multi_candidates = []
+        for idx in candidates_sorted[:5]:  # 最多报告前5个
+            r = self.db.records[idx]
+            multi_candidates.append({
+                'seq': r.get('seq'),
+                'title': r.get('title', ''),
+                'matched_words': matched_words_count
+            })
+
+        return rec.get('seq'), 0.5, rec, multi_candidates
 
 
 # ═══════════════════════════════════════════════════════
@@ -254,7 +290,7 @@ def process_zip(input_path, output_path, matcher):
                 ext = Path(old_name).suffix.lower()
 
                 if ext == '.pdf':
-                    seq, confidence, record = matcher.match(old_name)
+                    seq, confidence, record, multi_candidates = matcher.match(old_name)
 
                     if seq is None or confidence == 0.0:
                         new_name = f"注意_{Path(old_name).name}"
@@ -274,6 +310,7 @@ def process_zip(input_path, output_path, matcher):
                 else:
                     new_name = Path(old_name).name
                     seq, confidence, status = None, 0.0, 'skipped'
+                    multi_candidates = []
 
                 zout.writestr(new_name, data)
 
@@ -282,7 +319,8 @@ def process_zip(input_path, output_path, matcher):
                     'new': new_name,
                     'seq': seq,
                     'confidence': confidence,
-                    'status': status
+                    'status': status,
+                    'multi_candidates': multi_candidates
                 })
 
     return results
@@ -303,7 +341,7 @@ def generate_report(archive_name, results):
         f"- **处理时间**: {now}",
         f"- **文件总数**: {total}",
         f"- **唯一匹配**: {success} (置信度 1.0)",
-        f"- **多匹配**: {multi} (置信度 0.7，需人工确认)",
+        f"- **多匹配**: {multi} (置信度 0.5，需人工确认)",
         f"- **匹配失败**: {failed}",
         f"- **跳过(非PDF)**: {skipped}",
         "",
@@ -317,7 +355,12 @@ def generate_report(archive_name, results):
         if r['status'] == 'success':
             lines.append(f"| ✅ | `{r['old']}` | → | `{r['new']}` | 唯一匹配 |")
         elif r['status'] == 'multi':
-            lines.append(f"| ⚠️ | `{r['old']}` | → | `{r['new']}` | 多匹配，取最短标题候选 |")
+            lines.append(f"| ⚠️ | `{r['old']}` | → | `{r['new']}` | 多匹配，最佳猜测 |")
+            # 列出候选
+            if r.get('multi_candidates'):
+                lines.append(f"|    |     |     |     | 候选列表：|")
+                for c in r['multi_candidates']:
+                    lines.append(f"|    |     |     |     |   - #{c['seq']}: {c['title'][:60]}... |")
         elif r['status'] == 'failed':
             lines.append(f"| ❌ | `{r['old']}` | → | `{r['new']}` | 无法匹配 |")
         else:
