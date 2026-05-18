@@ -18,3 +18,19 @@ nytprof.out
 *.o
 *.bs
 *~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Data files (large, user-provided)
+data/
+*.json
+*.csv
+*.zip
+
+# IDE
+.vscode/
+.idea/
